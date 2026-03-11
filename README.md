@@ -31,6 +31,19 @@ https://github.com/user-attachments/assets/d8f98f63-9f6b-4217-b9ea-298e51aea309
 9. **Adam Optimizer Epsilon Parameter** - Adam 优化器参数设置
 10. **Tanh Activation Function** - Tanh 激活函数
 
+## 大模型强化学习增强（新增）
+
+本仓库新增了 3 个可直接运行的创新模块，均已集成到 `train.py`：
+
+1. **LLM 风格策略先验（LLMStrategicPrior）**  
+   将观测状态转为“语言提示”语义，并利用规则化先验生成动作，与 PPO 动作做动态融合（训练早期融合强，后期自动衰减）。
+2. **内在好奇心奖励（RND Intrinsic Reward）**  
+   用随机网络蒸馏（RND）估计状态新颖度，把探索奖励加入环境奖励，提升稀疏场景下探索效率。
+3. **自适应课程学习（Adaptive Curriculum）**  
+   根据最近回合奖励自动调整雷达危险区半径，形成“由易到难”的训练节奏。
+
+对应代码文件：`llm_enhancements.py`。
+
 ## 环境要求
 
 - Python 3.7+
@@ -85,6 +98,9 @@ python train.py \
 - `--restore`: 是否加载已有模型（默认: `False`）
 - `--save_dir`: 模型保存目录（默认: `./data`）
 - `--model_dir`: 模型加载目录
+- `--use_llm_prior`: 启用 LLM 风格先验动作融合
+- `--use_intrinsic_reward`: 启用 RND 内在奖励
+- `--use_curriculum`: 启用自适应课程学习
 
 ## 项目结构
 
