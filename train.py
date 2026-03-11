@@ -9,6 +9,7 @@ from normalization import Normalization, RewardScaling
 from replaybuffer import ReplayBuffer
 from ppo_continuous import PPO_continuous
 from mpe.MPE_env import MPEEnv
+from llm_enhancements import LLMStrategicPrior, IntrinsicRewarder, AdaptiveCurriculum
 
 
 def evaluate_policy(args, env, agents,state_norm,seed=0):
@@ -101,6 +102,7 @@ def eval_main(args, seed):
     for agent_id in range(env.n):
         replay_buffers.append(ReplayBuffer(args))
         agents.append(PPO_continuous(args))
+
     # 加载现有模型
     for agent_id in range(env.n):
         agents[agent_id].restore(agent_id)
@@ -138,6 +140,10 @@ def main(args, seed):
     for agent_id in range(env.n):
         replay_buffers.append(ReplayBuffer(args))
         agents.append(PPO_continuous(args))
+
+    strategic_prior = LLMStrategicPrior(args.action_dim, args.prior_alpha_start, args.prior_alpha_end, args.prior_decay_steps) if args.use_llm_prior else None
+    intrinsic_rewarders = [IntrinsicRewarder(args.state_dim, args.device, args.rnd_lr, args.intrinsic_coef) for _ in range(env.n)] if args.use_intrinsic_reward else None
+    curriculum = AdaptiveCurriculum(env.world.target_radius, args.curriculum_min_radius, args.curriculum_max_radius, args.curriculum_step) if args.use_curriculum else None
     # 加载现有模型
     if args.restore:
         for agent_id in range(env.n):
@@ -168,6 +174,10 @@ def main(args, seed):
                     action = 2 * (a - 0.5) * args.max_action  # [0,1]->[-max,max]
                 else:
                     action = a
+                if strategic_prior is not None:
+                    prior_action = strategic_prior.suggest_action(s[agent_id])
+                    mix_alpha = strategic_prior.alpha(total_steps)
+                    action = np.clip((1 - mix_alpha) * action + mix_alpha * prior_action, -args.max_action, args.max_action)
                 actions.append(action)
                 actions_logprob.append(a_logprob)
 
@@ -179,9 +189,12 @@ def main(args, seed):
                     dw = True
                 else:
                     dw = False
-                replay_buffers[agent_id].store(s[agent_id], actions[agent_id], actions_logprob[agent_id], r[agent_id], s_next[agent_id], dw, done[agent_id])
+                reward = r[agent_id]
+                if intrinsic_rewarders is not None:
+                    reward += intrinsic_rewarders[agent_id].compute_and_update(s_next[agent_id])
+                replay_buffers[agent_id].store(s[agent_id], actions[agent_id], actions_logprob[agent_id], reward, s_next[agent_id], dw, done[agent_id])
                 # 计算累计奖励
-                episode_rewards[agent_id] += r[agent_id]
+                episode_rewards[agent_id] += reward
             # 更新智能体状态
             s = s_next
             total_steps += 1
@@ -204,6 +217,10 @@ def main(args, seed):
             evaluate_reward = evaluate_policy(args, env, agents,state_norm)
             writer.add_scalars("eval_episode_rewards/total_episodes", {"rewards/episodes": evaluate_reward}, total_steps//args.max_episode_steps)
 
+        if curriculum is not None:
+            current_radius = curriculum.update(env, episode_rewards.sum())
+            writer.add_scalars("curriculum/target_radius", {"radius": current_radius}, total_steps//args.max_episode_steps)
+
         # log
         print("episodes:{} episode rewards:{} agents rewards:{}".format(
             total_steps // args.max_episode_steps,
@@ -224,7 +241,7 @@ if __name__ == '__main__':
     parser.add_argument("--max_train_steps", type=int, default=int(7.6e6), help=" Maximum number of training steps")
     parser.add_argument("--evaluate_freq", type=float, default=500, help="Evaluate the policy every 'evaluate_freq' episodes")
 
-    parser.add_argument("--restore", type=bool, default=True, help="restore or not")
+    parser.add_argument("--restore", type=bool, default=False, help="restore or not")
     parser.add_argument("--save_freq", type=int, default=300, help="Save frequency")
     parser.add_argument("--save_dir", type=str, default="./data", help="save_dir")
     parser.add_argument("--model_dir", type=str, default="./data/best/model/300", help="model_dir")
@@ -253,6 +270,19 @@ if __name__ == '__main__':
     parser.add_argument("--use_orthogonal_init", type=bool, default=True, help="Trick 8: orthogonal initialization")
     parser.add_argument("--set_adam_eps", type=float, default=True, help="Trick 9: set Adam epsilon=1e-5")
     parser.add_argument("--use_tanh", type=float, default=True, help="Trick 10: tanh activation function")
+    parser.add_argument("--use_llm_prior", type=bool, default=True, help="Use LLM-style strategic prior action fusion")
+    parser.add_argument("--prior_alpha_start", type=float, default=0.35, help="Initial fusion weight for LLM prior")
+    parser.add_argument("--prior_alpha_end", type=float, default=0.05, help="Final fusion weight for LLM prior")
+    parser.add_argument("--prior_decay_steps", type=int, default=200000, help="Steps for prior fusion decay")
+
+    parser.add_argument("--use_intrinsic_reward", type=bool, default=True, help="Use curiosity intrinsic reward (RND)")
+    parser.add_argument("--intrinsic_coef", type=float, default=0.05, help="Intrinsic reward coefficient")
+    parser.add_argument("--rnd_lr", type=float, default=1e-3, help="RND predictor learning rate")
+
+    parser.add_argument("--use_curriculum", type=bool, default=True, help="Use adaptive curriculum on radar radius")
+    parser.add_argument("--curriculum_min_radius", type=float, default=0.35, help="Minimum radar radius")
+    parser.add_argument("--curriculum_max_radius", type=float, default=0.8, help="Maximum radar radius")
+    parser.add_argument("--curriculum_step", type=float, default=0.02, help="Curriculum update step")
 
     args = parser.parse_args()
 
@@ -263,5 +293,5 @@ if __name__ == '__main__':
         print("choose to use cpu...")
         args.device = torch.device("cpu")
 
-    #main(args, seed=10)
-    eval_main(args, seed=0)
+    main(args, seed=10)
+    # eval_main(args, seed=0)
